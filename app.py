@@ -56,16 +56,17 @@ button[data-baseweb="tab"] {padding: .4rem .6rem; white-space: nowrap;}
 
 # ---------------------------------------------------------------- login
 def check_password() -> bool:
-    pw = os.environ.get("APP_PASSWORD", "")
+    pw = os.environ.get("APP_PASSWORD", "").strip()
     if not pw or st.session_state.get("authed"):
         return True
     st.title("🕸️ Data Scraper Studio")
-    entered = st.text_input("Password", type="password")
+    entered = st.text_input("Password", type="password",
+                            help="Ketuk ikon mata untuk melihat ketikan. Awas huruf kapital otomatis dari keyboard HP.")
     if st.button("Masuk", type="primary", width="stretch"):
-        if hmac.compare_digest(entered, pw):
+        if hmac.compare_digest(entered.strip().encode(), pw.encode()):
             st.session_state["authed"] = True
             st.rerun()
-        st.error("Password salah")
+        st.error("Password salah. Cek huruf besar/kecil dan spasi, atau cek APP_PASSWORD di Secrets Streamlit.")
     return False
 
 
