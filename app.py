@@ -19,7 +19,7 @@ st.set_page_config(page_title="Data Scraper Studio", page_icon="🕸️", layout
 # Secrets Streamlit Cloud → environment (harus sebelum modul core dimuat)
 try:
     for _k in ("DATABASE_URL", "APP_PASSWORD", "SCRAPER_TZ", "SCHEDULER_IN_APP"):
-        if _k in st.secrets and not os.environ.get(_k):
+        if _k in st.secrets:  # Secrets selalu menang, supaya perubahan Secrets langsung terpakai
             os.environ[_k] = str(st.secrets[_k])
 except FileNotFoundError:
     pass

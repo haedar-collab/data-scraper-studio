@@ -73,10 +73,18 @@ def database_url() -> str:
     return f"sqlite:///{path}"
 
 
+_engine_url: str | None = None
+
+
 def engine() -> Engine:
-    global _engine
+    """Engine dibuat ulang otomatis bila DATABASE_URL berubah (mis. Secrets diperbarui)."""
+    global _engine, _engine_url
+    url = database_url()
+    if _engine is not None and url != _engine_url:
+        _engine.dispose()
+        _engine = None
     if _engine is None:
-        url = database_url()
+        _engine_url = url
         if url.startswith("sqlite"):
             _engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
 
