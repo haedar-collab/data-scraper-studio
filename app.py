@@ -73,7 +73,21 @@ def check_password() -> bool:
 if not check_password():
     st.stop()
 
-db.init_db()
+try:
+    db.init_db()
+except Exception as _e:  # noqa: BLE001
+    _url = os.environ.get("DATABASE_URL", "")
+    st.error("❌ Gagal terhubung ke database.")
+    st.markdown(f"""
+**Pesan error:** `{type(_e).__name__}: {str(_e).splitlines()[0][:300]}`
+
+Cek di **Streamlit → ⋮ → Settings → Secrets**:
+- `DATABASE_URL` diawali `postgresql://` dan diakhiri `?sslmode=require` (sekarang diawali: `{_url[:13] or '(kosong)'}`)
+- Pakai tanda kutip biasa `"`, bukan kutip miring `“ ”` dari keyboard HP
+- Salin ulang connection string dari Neon (tombol **Connect**), pastikan password ikut tersalin, bukan `****`
+- Setelah mengubah Secrets, klik **⋮ → Reboot app**
+""")
+    st.stop()
 CLOUD_MODE = bool(os.environ.get("DATABASE_URL")) and os.environ.get("SCHEDULER_IN_APP", "0") != "1"
 
 
