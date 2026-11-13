@@ -82,7 +82,8 @@ except Exception as _e:  # noqa: BLE001
 **Pesan error:** `{type(_e).__name__}: {str(_e).splitlines()[0][:300]}`
 
 Cek di **Streamlit → ⋮ → Settings → Secrets**:
-- `DATABASE_URL` diawali `postgresql://` dan diakhiri `?sslmode=require` (sekarang diawali: `{_url[:13] or '(kosong)'}`)
+- Terbaca sebagai: `{db.masked_url(_url) or '(kosong)'}`
+- `DATABASE_URL` harus berbentuk `postgresql://user:password@host/neondb?sslmode=require`
 - Pakai tanda kutip biasa `"`, bukan kutip miring `“ ”` dari keyboard HP
 - Salin ulang connection string dari Neon (tombol **Connect**), pastikan password ikut tersalin, bukan `****`
 - Setelah mengubah Secrets, klik **⋮ → Reboot app**

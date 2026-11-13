@@ -31,8 +31,24 @@ def now_iso() -> str:
     return now_dt().isoformat(sep=" ")
 
 
+def clean_database_url(raw: str) -> str:
+    """Bersihkan salinan dari HP/Neon: spasi, baris baru, kutip miring, awalan `psql '...'`."""
+    url = (raw or "").strip().replace("\n", "").replace("\r", "")
+    for q in ('"', "'", "\u201c", "\u201d", "\u2018", "\u2019", "`"):
+        url = url.replace(q, "")
+    i = url.find("postgres")
+    if i > 0:
+        url = url[i:]
+    return url.split()[0] if url.split() else ""
+
+
+def masked_url(raw: str) -> str:
+    import re
+    return re.sub(r"(://[^:/@]*:)[^@]*@", r"\1****@", clean_database_url(raw))
+
+
 def database_url() -> str:
-    url = (os.environ.get("DATABASE_URL") or "").strip()
+    url = clean_database_url(os.environ.get("DATABASE_URL") or "")
     if url:
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://"):]
