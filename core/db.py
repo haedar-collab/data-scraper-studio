@@ -47,6 +47,19 @@ def masked_url(raw: str) -> str:
     return re.sub(r"(://[^:/@]*:)[^@]*@", r"\1****@", clean_database_url(raw))
 
 
+def password_hint(raw: str) -> str:
+    from urllib.parse import unquote, urlsplit
+    try:
+        pw = unquote(urlsplit(clean_database_url(raw)).password or "")
+    except ValueError:
+        return "tidak terbaca"
+    if not pw:
+        return "**kosong** — password tidak ikut tersalin"
+    if set(pw) <= {"*", "•", "x", "X"}:
+        return "**masih berupa `****`** — kamu menyalin versi tersembunyi, klik ikon mata/Copy di Neon"
+    return f"{len(pw)} karakter, diawali `{pw[:2]}…`"
+
+
 def database_url() -> str:
     url = clean_database_url(os.environ.get("DATABASE_URL") or "")
     if url:

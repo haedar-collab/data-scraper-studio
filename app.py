@@ -83,6 +83,7 @@ except Exception as _e:  # noqa: BLE001
 
 Cek di **Streamlit → ⋮ → Settings → Secrets**:
 - Terbaca sebagai: `{db.masked_url(_url) or '(kosong)'}`
+- Password di URL: {db.password_hint(_url)}
 - `DATABASE_URL` harus berbentuk `postgresql://user:password@host/neondb?sslmode=require`
 - Pakai tanda kutip biasa `"`, bukan kutip miring `“ ”` dari keyboard HP
 - Salin ulang connection string dari Neon (tombol **Connect**), pastikan password ikut tersalin, bukan `****`
