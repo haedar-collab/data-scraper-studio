@@ -34,6 +34,4 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/scraper_test
         run: pytest -q
       - name: Live check of preset sources (informational)
-        env:
-          CKAN_PROBES: https://data.humdata.org https://demo.ckan.org https://data.gov.au/data https://open.canada.ca/data https://catalog.data.gov https://data.go.id
         run: python scripts/check_presets.py

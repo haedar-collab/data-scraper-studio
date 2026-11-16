@@ -72,9 +72,9 @@ PRESETS = [
         },
     },
     {
-        "name": "Open Data CKAN — contoh pencarian",
+        "name": "HDX Open Data — dataset Indonesia",
         "type": "ckan",
         "category": "Open Data",
-        "config": {"base_url": "https://catalog.data.gov", "query": "inflation", "rows": 50},
+        "config": {"base_url": "https://data.humdata.org", "query": "indonesia", "rows": 50},
     },
 ]

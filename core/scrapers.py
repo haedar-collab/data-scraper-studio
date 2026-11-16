@@ -345,7 +345,7 @@ SOURCE_TYPES: dict[str, dict[str, Any]] = {
     "json_api": {"label": "JSON API", "fn": scrape_json,
                  "help": "Endpoint API publik (CoinGecko, Binance, dsb)."},
     "ckan": {"label": "Portal Open Data (CKAN)", "fn": scrape_ckan,
-             "help": "Cari dataset di portal open data berbasis CKAN."},
+             "help": "Cari dataset di portal open data berbasis CKAN (mis. data.humdata.org, open.canada.ca/data). Catatan: data.go.id tidak menyediakan CKAN API — pakai tipe JSON API/HTML untuk situs tersebut."},
 }
 
 
