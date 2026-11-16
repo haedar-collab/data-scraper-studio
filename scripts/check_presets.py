@@ -21,6 +21,13 @@ for p in PRESETS:
     except (ScrapeError, Exception) as e:  # noqa: BLE001
         print(f"::warning title=PRESET GAGAL::{p['name']} → {str(e)[:250]}")
         lines.append(f"| {p['name']} | ❌ {str(e)[:150]} |")
+# Probe kandidat portal CKAN tambahan (informasi untuk pemeliharaan preset)
+for base in os.environ.get("CKAN_PROBES", "").split():
+    try:
+        n = len(run_scraper("ckan", {"base_url": base, "query": "indonesia", "rows": 5}))
+        print(f"::notice title=CKAN PROBE::{base} → {n} dataset")
+    except Exception as e:  # noqa: BLE001
+        print(f"::warning title=CKAN PROBE::{base} → {str(e)[:200]}")
 summary = os.environ.get("GITHUB_STEP_SUMMARY")
 if summary:
     with open(summary, "a", encoding="utf-8") as f:

@@ -23,8 +23,8 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -34,4 +34,6 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/scraper_test
         run: pytest -q
       - name: Live check of preset sources (informational)
+        env:
+          CKAN_PROBES: https://data.humdata.org https://demo.ckan.org https://data.gov.au/data https://open.canada.ca/data https://catalog.data.gov https://data.go.id
         run: python scripts/check_presets.py
