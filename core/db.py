@@ -234,10 +234,11 @@ def list_runs(limit: int = 300) -> pd.DataFrame:
 
 
 # ---------- Items ----------
-def save_items(source_id: int, run_id: int, items: Iterable[dict]) -> int:
+def save_items(source_id: int, run_id: int, items: Iterable[dict]) -> list[dict]:
+    """Simpan item; kembalikan daftar item yang BENAR-BENAR baru (untuk notifikasi)."""
     items = list({it["fingerprint"]: it for it in items}.values())  # buang duplikat dalam satu run
     if not items:
-        return 0
+        return []
     with _write_lock, engine().begin() as c:
         existing: set[str] = set()
         fps = [it["fingerprint"] for it in items]
@@ -246,15 +247,16 @@ def save_items(source_id: int, run_id: int, items: Iterable[dict]) -> int:
         for i in range(0, len(fps), 500):
             existing |= {r[0] for r in c.execute(q, {"s": source_id, "fps": fps[i:i + 500]})}
         ts = now_iso()
+        fresh = [it for it in items if it["fingerprint"] not in existing]
         rows = [{"s": source_id, "r": run_id, "fp": it["fingerprint"], "t": it.get("title", ""),
                  "u": it.get("url", ""), "p": it.get("published", ""),
                  "d": json.dumps(it["data"], ensure_ascii=False, default=str), "ts": ts}
-                for it in items if it["fingerprint"] not in existing]
+                for it in fresh]
         if rows:
             c.execute(text("""INSERT INTO items(source_id,run_id,fingerprint,title,url,published,data,scraped_at)
                               VALUES(:s,:r,:fp,:t,:u,:p,:d,:ts)
                               ON CONFLICT(source_id, fingerprint) DO NOTHING"""), rows)
-    return len(rows)
+    return fresh
 
 
 def query_items(source_ids: list[int] | None = None, keyword: str = "",
@@ -288,6 +290,40 @@ def delete_items(source_ids: list[int] | None = None) -> int:
         stmt = text("DELETE FROM items WHERE source_id IN :ids").bindparams(bindparam("ids", expanding=True))
         return _write(stmt, ids=list(source_ids))
     return _write("DELETE FROM items")
+
+
+def apply_retention() -> int:
+    """Hapus item lebih tua dari `retention_days` milik masing-masing sumber (0 = simpan selamanya)."""
+    removed = 0
+    for src in list_sources():
+        days = int(src["config"].get("retention_days") or 0)
+        if days > 0:
+            cutoff = (now_dt() - timedelta(days=days)).isoformat(sep=" ")
+            removed += _write("DELETE FROM items WHERE source_id=:s AND scraped_at < :c", s=src["id"], c=cutoff)
+    return removed
+
+
+def mark_stale_runs(max_minutes: int = 30) -> int:
+    """Run yang 'running' terlalu lama (proses mati/timeout) ditandai error."""
+    cutoff = (now_dt() - timedelta(minutes=max_minutes)).isoformat(sep=" ")
+    return _write("""UPDATE runs SET status='error', finished_at=:ts,
+                     message='Proses berhenti sebelum selesai (timeout/restart)'
+                     WHERE status='running' AND started_at < :c""", ts=now_iso(), c=cutoff)
+
+
+def last_run_by_trigger(trigger: str) -> str | None:
+    with engine().connect() as c:
+        return c.execute(text("SELECT MAX(started_at) FROM runs WHERE trigger=:t"), {"t": trigger}).scalar()
+
+
+def db_size_bytes() -> int | None:
+    try:
+        with engine().connect() as c:
+            if is_postgres():
+                return int(c.execute(text("SELECT pg_database_size(current_database())")).scalar())
+            return int(c.execute(text("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()")).scalar())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def prune_runs(keep_days: int = 30) -> int:

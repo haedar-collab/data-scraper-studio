@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from datetime import date, timedelta
 
 import pandas as pd
@@ -18,7 +19,8 @@ st.set_page_config(page_title="Data Scraper Studio", page_icon="🕸️", layout
 
 # Secrets Streamlit Cloud → environment (harus sebelum modul core dimuat)
 try:
-    for _k in ("DATABASE_URL", "APP_PASSWORD", "SCRAPER_TZ", "SCHEDULER_IN_APP"):
+    for _k in ("DATABASE_URL", "APP_PASSWORD", "SCRAPER_TZ", "SCHEDULER_IN_APP",
+               "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
         if _k in st.secrets:  # Secrets selalu menang, supaya perubahan Secrets langsung terpakai
             os.environ[_k] = str(st.secrets[_k])
 except FileNotFoundError:
@@ -26,7 +28,7 @@ except FileNotFoundError:
 except Exception:  # noqa: BLE001 — tidak ada secrets.toml saat lokal
     pass
 
-from core import db  # noqa: E402
+from core import db, notify  # noqa: E402
 from core.exporter import build_results_frame, to_csv_bytes, to_excel_bytes  # noqa: E402
 from core.presets import PRESETS  # noqa: E402
 from core.runner import run_source  # noqa: E402
@@ -60,13 +62,25 @@ def check_password() -> bool:
     if not pw or st.session_state.get("authed"):
         return True
     st.title("🕸️ Data Scraper Studio")
+    fails = st.session_state.get("pw_fails", 0)
+    locked_until = st.session_state.get("pw_locked_until", 0.0)
+    if time.time() < locked_until:
+        st.error(f"Terlalu banyak percobaan. Coba lagi dalam {int(locked_until - time.time()) + 1} detik.")
+        return False
     entered = st.text_input("Password", type="password",
                             help="Ketuk ikon mata untuk melihat ketikan. Awas huruf kapital otomatis dari keyboard HP.")
     if st.button("Masuk", type="primary", width="stretch"):
         if hmac.compare_digest(entered.strip().encode(), pw.encode()):
-            st.session_state["authed"] = True
+            st.session_state.update(authed=True, pw_fails=0)
             st.rerun()
-        st.error("Password salah. Cek huruf besar/kecil dan spasi, atau cek APP_PASSWORD di Secrets Streamlit.")
+        fails += 1
+        st.session_state["pw_fails"] = fails
+        time.sleep(1)  # perlambat tebakan beruntun
+        if fails >= 5:
+            st.session_state.update(pw_locked_until=time.time() + 60, pw_fails=0)
+            st.error("Terlalu banyak percobaan salah. Coba lagi dalam 60 detik.")
+        else:
+            st.error("Password salah. Cek huruf besar/kecil dan spasi, atau cek APP_PASSWORD di Secrets Streamlit.")
     return False
 
 
@@ -91,6 +105,44 @@ Cek di **Streamlit → ⋮ → Settings → Secrets**:
 """)
     st.stop()
 CLOUD_MODE = bool(os.environ.get("DATABASE_URL")) and os.environ.get("SCHEDULER_IN_APP", "0") != "1"
+
+
+# ---- cache baca DB: tiap ketukan di Streamlit menjalankan ulang seluruh skrip, jadi query
+# ---- ke database cloud di-cache singkat dan dibersihkan setiap ada perubahan data.
+@st.cache_data(ttl=60, show_spinner=False)
+def c_sources() -> list[dict]:
+    return db.list_sources()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def c_stats() -> dict:
+    return db.stats()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def c_schedules() -> list[dict]:
+    return db.list_schedules()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def c_runs() -> pd.DataFrame:
+    return db.list_runs()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def c_items(source_ids: tuple, keyword: str, d_from: str | None, d_to: str | None, limit: int) -> pd.DataFrame:
+    return build_results_frame(db.query_items(list(source_ids) or None, keyword, d_from, d_to, limit))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def c_health() -> dict:
+    db.mark_stale_runs()
+    return {"size": db.db_size_bytes(), "last_schedule": db.last_run_by_trigger("schedule"),
+            "dialect": db.engine().dialect.name}
+
+
+def invalidate() -> None:
+    st.cache_data.clear()
 
 
 @st.cache_resource
@@ -202,6 +254,14 @@ def source_editor(prefix: str, src: dict | None = None) -> dict | None:
         mode = st.radio("Mode simpan", ["Hanya item baru (hapus duplikat)", "Simpan snapshot tiap run (riwayat harga)"],
                         index=0 if cfg.get("dedupe", True) else 1, key=f"{prefix}_dd", horizontal=True)
         new["dedupe"] = mode.startswith("Hanya")
+        a, b = st.columns(2)
+        new["retention_days"] = int(a.number_input(
+            "Simpan data maksimal (hari, 0 = selamanya)", 0, 3650,
+            int(cfg.get("retention_days", 0 if new["dedupe"] else 30)), key=f"{prefix}_ret",
+            help="Item lebih tua dihapus otomatis. Disarankan 30–90 hari untuk mode snapshot agar database gratis tidak penuh."))
+        new["notify"] = b.checkbox("🔔 Notifikasi Telegram untuk item baru", bool(cfg.get("notify", False)),
+                                   key=f"{prefix}_ntf", help="Butuh TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID (lihat ⚙️ Sistem). "
+                                                              "Tidak berlaku untuk mode snapshot.")
         new["dedupe_by"] = st.radio("Identitas item ditentukan oleh", ["url", "data"],
                                     index=["url", "data"].index(cfg.get("dedupe_by", "url")), horizontal=True,
                                     format_func=lambda x: "URL" if x == "url" else "Seluruh isi data",
@@ -243,7 +303,8 @@ def show_run_results(results: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------- header
-stats = db.stats()
+stats = c_stats()
+health = c_health()
 st.title("🕸️ Data Scraper Studio")
 _cards = [("Sumber", stats["sources"]), ("Item", f"{stats['items']:,}".replace(",", ".")),
           ("Jadwal", stats["schedules"]), ("Error 24j", stats["errors_24h"])]
@@ -251,19 +312,30 @@ st.markdown('<div class="stat-row">' + "".join(
     f'<div class="stat"><div class="v">{v}</div><div class="l">{k}</div></div>' for k, v in _cards) + "</div>",
     unsafe_allow_html=True)
 st.caption(f"Run terakhir: {stats['last_run'] or '—'} WIB · "
-           + ("Jadwal dijalankan GitHub Actions (cek tiap ±15 menit)" if CLOUD_MODE else
+           + ("Jadwal dijalankan GitHub Actions" if CLOUD_MODE else
               f"Scheduler lokal {'aktif' if sched.running else 'nonaktif'}"))
+
+if CLOUD_MODE and not os.environ.get("APP_PASSWORD", "").strip():
+    st.warning("🔓 APP_PASSWORD belum diisi — aplikasi bisa dibuka siapa saja.")
+if CLOUD_MODE and stats["schedules"]:
+    _ls = health["last_schedule"]
+    _age_h = (db.now_dt() - pd.Timestamp(_ls).to_pydatetime()).total_seconds() / 3600 if _ls else None
+    if _age_h is None or _age_h > 3:
+        st.warning("⏰ Jadwal tidak jalan >3 jam" + (f" (terakhir {_ls[5:16]})" if _ls else "")
+                   + ". Cek tab ⚙️ Sistem.")
+
 if st.button("🔄 Muat ulang data"):
+    invalidate()
     if not CLOUD_MODE:
         sched.sync(force=True)
     st.rerun()
 
-tab_src, tab_run, tab_sched, tab_res, tab_log = st.tabs(
-    ["📡 Sumber", "▶️ Jalankan", "⏰ Jadwal", "📊 Hasil & Ekspor", "📜 Log"])
+tab_src, tab_run, tab_sched, tab_res, tab_log, tab_sys = st.tabs(
+    ["📡 Sumber", "▶️ Jalankan", "⏰ Jadwal", "📊 Hasil & Ekspor", "📜 Log", "⚙️ Sistem"])
 
 # ---------------------------------------------------------------- Sumber
 with tab_src:
-    sources = db.list_sources()
+    sources = c_sources()
     sub_list, sub_new, sub_edit, sub_preset = st.tabs(["Daftar", "➕ Tambah", "✏️ Edit / Hapus", "⚡ Preset"])
 
     with sub_list:
@@ -290,6 +362,7 @@ with tab_src:
                     st.error("Nama sumber sudah dipakai")
                 else:
                     db.save_source(draft["name"], draft["type"], draft["config"], draft["category"], draft["enabled"])
+                    invalidate()
                     st.success(f"Sumber '{draft['name']}' disimpan")
                     st.rerun()
 
@@ -310,12 +383,14 @@ with tab_src:
                     else:
                         db.save_source(draft["name"], draft["type"], draft["config"], draft["category"],
                                        draft["enabled"], source_id=sid)
+                        invalidate()
                         sched.sync() if not CLOUD_MODE else None
                         st.success("Tersimpan")
                         st.rerun()
                 confirm = c2.checkbox("Yakin hapus?", key=f"cdel_{sid}")
                 if c2.button("🗑️ Hapus sumber", key=f"del_{sid}", disabled=not confirm):
                     db.delete_source(sid)
+                    invalidate()
                     sched.sync() if not CLOUD_MODE else None
                     st.rerun()
                 with c3:
@@ -333,11 +408,12 @@ with tab_src:
                 c3.write("✔️ ada")
             elif c3.button("Tambah", key=f"preset_{i}"):
                 db.save_source(p["name"], p["type"], p["config"], p["category"])
+                invalidate()
                 st.rerun()
 
 # ---------------------------------------------------------------- Jalankan
 with tab_run:
-    sources = db.list_sources()
+    sources = c_sources()
     if not sources:
         st.info("Tambahkan sumber dulu di tab 📡 Sumber.")
     else:
@@ -357,6 +433,7 @@ with tab_run:
                 results.append(run_source(sid, "manual"))
                 bar.progress(n / len(chosen))
             status.empty()
+            invalidate()
             st.session_state["last_results"] = results
         if st.session_state.get("last_results"):
             st.subheader("Hasil run terakhir")
@@ -364,7 +441,7 @@ with tab_run:
 
 # ---------------------------------------------------------------- Jadwal
 with tab_sched:
-    sources = db.list_sources()
+    sources = c_sources()
     if not sources:
         st.info("Tambahkan sumber dulu.")
     else:
@@ -383,12 +460,13 @@ with tab_sched:
             else:
                 for sid in targets:
                     db.add_schedule(sid, mode, value.strip())
+                invalidate()
                 sched.sync() if not CLOUD_MODE else None
                 st.success(f"{len(targets)} jadwal ditambahkan")
                 st.rerun()
 
         st.subheader("Jadwal terdaftar")
-        schedules = db.list_schedules()
+        schedules = c_schedules()
         if not schedules:
             st.info("Belum ada jadwal.")
         else:
@@ -404,19 +482,22 @@ with tab_sched:
                 on = c4.toggle("On", bool(s["enabled"]), key=f"tg_{s['id']}")
                 if on != bool(s["enabled"]):
                     db.set_schedule_enabled(s["id"], on)
+                    invalidate()
                     sched.sync() if not CLOUD_MODE else None
                     st.rerun()
                 if c5.button("🗑️ Hapus", key=f"dsch_{s['id']}"):
                     db.delete_schedule(s["id"])
+                    invalidate()
                     sched.sync() if not CLOUD_MODE else None
                     st.rerun()
-            st.caption("Mode cloud: GitHub Actions mengecek jadwal tiap ±15 menit, jadi interval < 15 menit "
-                       "efektif jadi 15 menit dan waktu jalan bisa mundur beberapa menit." if CLOUD_MODE else
+            st.caption("Mode cloud: GitHub Actions mengecek jadwal berkala. Di paket gratis GitHub sering terlambat "
+                       "(praktiknya tiap 30–60 menit). Untuk jadwal tepat waktu, pasang cron-job.org (lihat ⚙️ Sistem)."
+                       if CLOUD_MODE else
                        "Jadwal berjalan selama aplikasi (atau worker.py) hidup.")
 
 # ---------------------------------------------------------------- Hasil
 with tab_res:
-    sources = db.list_sources()
+    sources = c_sources()
     by_id = {s["id"]: s for s in sources}
     c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
     sel = c1.multiselect("Sumber", list(by_id), format_func=lambda i: by_id[i]["name"], key="res_src",
@@ -425,8 +506,7 @@ with tab_res:
     rng = c3.date_input("Rentang tanggal scrape", (date.today() - timedelta(days=30), date.today()), key="res_rng")
     limit = c4.number_input("Maks baris", 100, 200000, 5000, 100, key="res_lim")
     d_from, d_to = (rng[0], rng[1]) if isinstance(rng, (tuple, list)) and len(rng) == 2 else (None, None)
-    raw = db.query_items(sel or None, kw.strip(), d_from and d_from.isoformat(), d_to and d_to.isoformat(), int(limit))
-    df = build_results_frame(raw)
+    df = c_items(tuple(sel), kw.strip(), d_from and d_from.isoformat(), d_to and d_to.isoformat(), int(limit))
 
     if df.empty:
         st.info("Belum ada data sesuai filter. Jalankan scraping dulu di tab ▶️ Jalankan.")
@@ -442,8 +522,13 @@ with tab_res:
             st.caption("Item tersimpan per hari")
             st.bar_chart(per_day, height=220)
 
-        cols = st.multiselect("Kolom ditampilkan / diekspor", list(df.columns),
-                              default=[c for c in df.columns if df[c].notna().any()], key="res_cols")
+        _opts = list(df.columns)
+        _prev = [c for c in st.session_state.get("res_cols", []) if c in _opts]
+        if "res_cols" in st.session_state and _prev != st.session_state["res_cols"]:
+            st.session_state["res_cols"] = _prev  # kolom berubah karena filter → buang pilihan yang hilang
+        cols = st.multiselect("Kolom ditampilkan / diekspor", _opts,
+                              default=None if "res_cols" in st.session_state else
+                              [c for c in _opts if df[c].notna().any()], key="res_cols")
         view = df[cols] if cols else df
         st.dataframe(view, width="stretch", height=400, hide_index=True,
                      column_config={"url": st.column_config.LinkColumn("url"),
@@ -451,10 +536,12 @@ with tab_res:
 
         stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
         e1, e2, e3 = st.columns([1, 1, 2])
-        e1.download_button("⬇️ Ekspor CSV", to_csv_bytes(view), f"scrape_{stamp}.csv", "text/csv",
+        # file dibuat saat tombol diketuk (bukan di setiap rerun) supaya aplikasi tetap ringan
+        e1.download_button("⬇️ Ekspor CSV", lambda v=view: to_csv_bytes(v), f"scrape_{stamp}.csv", "text/csv",
                            width="stretch")
         per_source = e3.checkbox("Excel: satu sheet per sumber", True, key="xl_split")
-        e2.download_button("⬇️ Ekspor Excel", to_excel_bytes(view, per_source=per_source), f"scrape_{stamp}.xlsx",
+        e2.download_button("⬇️ Ekspor Excel", lambda v=view, ps=per_source: to_excel_bytes(v, per_source=ps),
+                           f"scrape_{stamp}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            width="stretch")
 
@@ -464,12 +551,13 @@ with tab_res:
         ok = st.checkbox(f"Saya yakin menghapus data dari {target}", key="del_items_ok")
         if st.button("Hapus data", disabled=not ok, key="del_items"):
             n = db.delete_items(sel or None)
+            invalidate()
             st.success(f"{n} item dihapus")
             st.rerun()
 
 # ---------------------------------------------------------------- Log
 with tab_log:
-    runs = db.list_runs()
+    runs = c_runs()
     if runs.empty:
         st.info("Belum ada riwayat run.")
     else:
@@ -479,3 +567,65 @@ with tab_log:
         icon = {"success": "✅", "error": "❌", "running": "⏳"}
         runs.insert(0, "", runs["status"].map(icon).fillna(""))
         st.dataframe(runs, width="stretch", hide_index=True, height=420)
+
+# ---------------------------------------------------------------- Sistem
+with tab_sys:
+    st.subheader("Status")
+    size = health["size"]
+    limit_gb = 1.0
+    if size is not None:
+        used = size / 1024 ** 3
+        st.write(f"🗄️ Database: **{'PostgreSQL (cloud)' if health['dialect'] == 'postgresql' else 'SQLite (lokal)'}** · "
+                 f"ukuran **{size / 1024 ** 2:.1f} MB**")
+        if health["dialect"] == "postgresql":
+            st.progress(min(used / limit_gb, 1.0), text=f"{used / limit_gb:.1%} dari kuota gratis Neon (±1 GB)")
+    st.write("⏰ Run terjadwal terakhir: " + (f"**{health['last_schedule']}** WIB" if health["last_schedule"]
+                                                else "**belum pernah**"))
+    if CLOUD_MODE:
+        st.caption("Kalau jadwal tidak jalan: buka GitHub → tab **Actions** → *Scheduled scraping*. Bila ada tombol "
+                   "**Enable workflow**, klik (GitHub mematikannya setelah 60 hari tanpa aktivitas). Bila run gagal "
+                   "merah, cek secret `DATABASE_URL` di GitHub.")
+    st.write(f"🔐 Password aplikasi: **{'aktif' if os.environ.get('APP_PASSWORD', '').strip() else 'TIDAK aktif'}**")
+    st.write(f"🔔 Telegram: **{'terhubung' if notify.configured() else 'belum diatur'}**")
+
+    c1, c2 = st.columns(2)
+    if c1.button("📨 Kirim pesan tes Telegram", disabled=not notify.configured(), width="stretch"):
+        ok, msg = notify.send("✅ Tes dari <b>Data Scraper Studio</b> — notifikasi berfungsi.")
+        (st.success if ok else st.error)(msg)
+    if c2.button("🧹 Terapkan retensi sekarang", width="stretch"):
+        n = db.apply_retention()
+        invalidate()
+        st.success(f"{n} item lama dihapus")
+
+    with st.expander("🔔 Cara mengaktifkan notifikasi Telegram"):
+        st.markdown("""
+1. Di Telegram, chat **@BotFather** → `/newbot` → ikuti langkahnya → salin **token**.
+2. Kirim pesan apa saja ke bot barumu, lalu buka `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   dan catat angka `"chat":{"id": ...}` → itu **chat ID**.
+3. Tambahkan ke **Streamlit Secrets** *dan* **GitHub → Settings → Secrets → Actions**:
+   ```
+   TELEGRAM_BOT_TOKEN = "123456:ABC..."
+   TELEGRAM_CHAT_ID = "123456789"
+   ```
+4. Reboot app, tekan **Kirim pesan tes**, lalu centang 🔔 di opsi lanjutan sumber yang diinginkan.
+
+Error terjadwal dikirim sekali saat sumber mulai gagal (tidak spam tiap run).
+""")
+    with st.expander("⏱️ Jadwal tepat waktu (cron-job.org) & batas GitHub"):
+        st.markdown("""
+**Kenapa perlu?** Jadwal bawaan GitHub sering terlambat 30–60 menit, dan **otomatis dimatikan** bila repo
+60 hari tanpa aktivitas. Pemicu dari luar (cron-job.org, gratis) memperbaiki keduanya.
+
+1. GitHub → foto profil → **Settings → Developer settings → Personal access tokens → Fine-grained tokens →
+   Generate new token**. *Repository access*: hanya `data-scraper-studio`. *Permissions → Actions*: **Read and write**.
+   Salin token.
+2. Daftar di **cron-job.org** → **Create cronjob**:
+   - URL: `https://api.github.com/repos/haedar-collab/data-scraper-studio/actions/workflows/scrape.yml/dispatches`
+   - Schedule: **tiap 30 menit** (tiap 15 menit hanya bila perlu — hemat kuota compute Neon 100 CU-jam/bulan)
+   - Advanced → Request method **POST**, Headers:
+     `Authorization: Bearer <token>` · `Accept: application/vnd.github+json`
+   - Request body: `{"ref":"main"}`
+3. **Test run** → status **204** berarti berhasil.
+
+Bila jadwal GitHub terlanjur nonaktif: tab **Actions → Scheduled scraping → Enable workflow**.
+""")

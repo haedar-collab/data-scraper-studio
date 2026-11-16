@@ -2,14 +2,18 @@ name: Scheduled scraping
 
 on:
   schedule:
-    # Tiap 15 menit (UTC). GitHub bisa terlambat beberapa menit saat sibuk.
-    - cron: "*/15 * * * *"
+    # Tiap 15 menit (UTC) — di paket gratis GitHub praktiknya sering mundur jadi 30–60 menit.
+    # Untuk jadwal tepat waktu, picu dari cron-job.org (lihat tab ⚙️ Sistem di aplikasi).
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       run_all:
         description: "Jalankan SEMUA sumber aktif sekarang"
         type: boolean
         default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: scraper
@@ -29,6 +33,8 @@ jobs:
       - name: Run due schedules
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCRAPER_TZ: Asia/Jakarta
         run: |
           if [ -z "$DATABASE_URL" ]; then echo "::error::Secret DATABASE_URL belum diisi"; exit 1; fi

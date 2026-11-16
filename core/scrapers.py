@@ -4,18 +4,26 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import os
 import time
+import warnings
 from calendar import timegm
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib import robotparser
 from urllib.parse import quote_plus, urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import feedparser
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
+TZ = os.environ.get("SCRAPER_TZ", "Asia/Jakarta")
+MAX_BYTES = 15 * 1024 * 1024      # batas ukuran respons per request
+ROBOTS_TTL = 6 * 3600              # cache robots.txt 6 jam
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,24 +51,25 @@ def make_session(cfg: dict) -> requests.Session:
     return s
 
 
-_robots_cache: dict[str, robotparser.RobotFileParser | None] = {}
+_robots_cache: dict[str, tuple[float, robotparser.RobotFileParser | None]] = {}
 
 
 def robots_allows(session: requests.Session, url: str) -> bool:
     p = urlparse(url)
     root = f"{p.scheme}://{p.netloc}"
-    if root not in _robots_cache:
-        rp = robotparser.RobotFileParser()
+    cached = _robots_cache.get(root)
+    if cached is None or time.time() - cached[0] > ROBOTS_TTL:
+        rp: robotparser.RobotFileParser | None = robotparser.RobotFileParser()
         try:
             r = session.get(root + "/robots.txt", timeout=10)
             if r.status_code >= 400:
-                _robots_cache[root] = None
+                rp = None
             else:
                 rp.parse(r.text.splitlines())
-                _robots_cache[root] = rp
         except requests.RequestException:
-            _robots_cache[root] = None
-    rp = _robots_cache[root]
+            rp = None
+        _robots_cache[root] = (time.time(), rp)
+    rp = _robots_cache[root][1]
     return True if rp is None else rp.can_fetch(session.headers.get("User-Agent", "*"), url)
 
 
@@ -70,11 +79,21 @@ def fetch(session: requests.Session, url: str, cfg: dict, method: str = "GET", *
     if cfg.get("respect_robots", True) and not robots_allows(session, url):
         raise ScrapeError(f"Diblokir robots.txt: {url} (matikan 'Patuhi robots.txt' hanya jika kamu punya izin).")
     try:
-        r = session.request(method, url, timeout=float(cfg.get("timeout", 20)), **kw)
+        r = session.request(method, url, timeout=float(cfg.get("timeout", 20)), stream=True, **kw)
+        if r.status_code >= 400:
+            r.close()
+            hint = " (situs menolak akses; sering terjadi pada IP server cloud)" if r.status_code in (401, 403) else ""
+            raise ScrapeError(f"HTTP {r.status_code} dari {url}{hint}")
+        buf, size = [], 0
+        for chunk in r.iter_content(64 * 1024):
+            size += len(chunk)
+            if size > MAX_BYTES:
+                r.close()
+                raise ScrapeError(f"Respons dari {url} lebih dari {MAX_BYTES // 1024 // 1024} MB, dihentikan.")
+            buf.append(chunk)
+        r._content = b"".join(buf)
     except requests.RequestException as e:
         raise ScrapeError(f"Gagal mengakses {url}: {e}") from e
-    if r.status_code >= 400:
-        raise ScrapeError(f"HTTP {r.status_code} dari {url}")
     return r
 
 
@@ -90,7 +109,8 @@ def struct_to_iso(st) -> str:
     if not st:
         return ""
     try:
-        return datetime.fromtimestamp(timegm(st), tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        return (datetime.fromtimestamp(timegm(st), tz=timezone.utc).astimezone(ZoneInfo(TZ))
+                .strftime("%Y-%m-%d %H:%M:%S"))
     except (TypeError, ValueError, OverflowError):
         return ""
 

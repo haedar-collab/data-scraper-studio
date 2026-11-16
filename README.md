@@ -76,11 +76,22 @@ Lalu buka tab **Actions** → aktifkan workflow bila diminta → pilih *Schedule
    ```
 4. **Deploy**. Kamu akan mendapat link `https://....streamlit.app`. Buka di HP, lalu *Add to Home Screen* supaya tampil seperti aplikasi.
 
+### 4. (Opsional) Notifikasi Telegram
+Isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di **Streamlit Secrets** dan **GitHub Secrets**, lalu centang
+🔔 di opsi lanjutan sumber. Panduan lengkap ada di tab **⚙️ Sistem**. Error terjadwal dikirim sekali saat sumber mulai gagal.
+
+### 5. (Disarankan) Jadwal tepat waktu via cron-job.org
+Jadwal bawaan GitHub di paket gratis sering mundur 30–60 menit dan **otomatis dimatikan setelah 60 hari tanpa
+aktivitas repo**. Pemicu eksternal (cron-job.org → GitHub API `workflow_dispatch`) memperbaiki keduanya.
+Langkah lengkap ada di tab **⚙️ Sistem**. Pakai interval 30 menit supaya kuota compute Neon (100 CU-jam/bulan) aman.
+
 ### Catatan mode cloud
 - Jadwal dijalankan oleh GitHub Actions. Interval di bawah 15 menit efektif menjadi 15 menit, dan GitHub bisa terlambat beberapa menit saat sibuk.
 - Tombol **Jalankan sekarang** di aplikasi tetap bisa dipakai kapan saja.
 - Aplikasi Streamlit akan "tidur" kalau lama tidak dibuka. Buka link-nya lalu tunggu beberapa detik. Jadwal tetap jalan karena dijalankan oleh GitHub.
 - Beberapa situs memblokir IP server cloud. Kalau suatu sumber selalu error di cloud tapi lancar di PC, itu penyebabnya.
+- **Retensi data**: tiap sumber punya opsi "Simpan data maksimal N hari". Mode snapshot default 30 hari supaya
+  database gratis Neon (±1 GB) tidak penuh. Pemakaian terlihat di tab ⚙️ Sistem.
 - Kuota gratis: repo **publik** = GitHub Actions tanpa batas. Repo **privat** = 2.000 menit/bulan (cek tiap 15 menit ≈ 1 menit/run, jadi sekitar 2.900 menit/bulan). Untuk repo privat, ubah cron di `.github/workflows/scrape.yml` menjadi `*/30 * * * *`. Aman dibuat publik karena password dan database tersimpan sebagai *secret*, bukan di kode.
 
 ## Scraping otomatis 24/7 (lokal / VPS)
@@ -101,6 +112,15 @@ Variabel lingkungan: `DATABASE_URL` (PostgreSQL; kosong = SQLite lokal), `APP_PA
 - Default aplikasi mematuhi `robots.txt`, memberi jeda antar halaman, dan retry otomatis. Patuhi ToS situs dan jangan set interval terlalu rapat.
 - URL preset pihak ketiga bisa berubah sewaktu-waktu. Cek dengan tombol Preview.
 
+## Pengujian
+```bash
+pip install pytest
+pytest -q                                   # SQLite
+TEST_DATABASE_URL=postgresql://... pytest -q  # + PostgreSQL
+```
+Di GitHub, workflow **Checks** menjalankan semua tes (SQLite + PostgreSQL) setiap push, lalu mengecek semua
+sumber preset ke internet sungguhan (hasil ada di ringkasan run).
+
 ## Struktur
 ```
 app.py            UI Streamlit
@@ -112,4 +132,7 @@ core/db.py        Database: PostgreSQL (cloud) / SQLite (lokal)
 core/scheduler.py APScheduler
 core/exporter.py  CSV & Excel
 core/presets.py   Sumber contoh
+core/notify.py    Notifikasi Telegram
+tests/            Test suite (pytest)
+scripts/check_presets.py  Cek live semua preset
 ```
